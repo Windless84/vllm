@@ -118,8 +118,21 @@ class MambaHybridModelState(DefaultModelState):
         self.num_accepted_tokens_gpu[req_index].fill_(1)
         if self._align_mode:
             # Seed the running state block from the resumed/prefilled position.
+            # Divide by the Mamba group's block size, not the attention block
+            # size: on hybrid models they differ (e.g. 4 vs ~1600 here), and the
+            # attention divisor seeds a column far past the Mamba block table,
+            # so the fused align pre-copy reads a garbage block id and faults on
+            # the first request that resumes over a cached prefix (vllm#53142).
+            # _mamba_spec is resolved by the first batch; a resume with
+            # num_computed_tokens > 0 can only follow a batch, and a fresh
+            # request seeds -1 with either divisor.
+            mamba_block_size = (
+                self._mamba_spec.block_size
+                if self._mamba_spec is not None
+                else self.cache_config.block_size
+            )
             self._mamba_state_idx_gpu[req_index].fill_(
-                (new_req_data.num_computed_tokens - 1) // self.cache_config.block_size
+                (new_req_data.num_computed_tokens - 1) // mamba_block_size
             )
 
     def _get_mamba_group_info(
